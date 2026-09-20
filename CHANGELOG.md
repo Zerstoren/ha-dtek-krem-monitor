@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.5] - 2026-09-21
+
+### Fixed
+
+- DDoS-Guard interstitial is no longer treated as a missing CSRF token: WAF cookies are kept and the official browser-check URLs are requested before retrying the shutdowns page.
+
 ## [1.2.4] - 2026-09-21
 
 ### Fixed

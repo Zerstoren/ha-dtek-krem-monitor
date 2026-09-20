@@ -85,6 +85,25 @@ class ParseHouseDataTests(unittest.TestCase):
             dtek_client._extract_csrf_token("<html><title>Just a moment...</title></html>")
         )
 
+    def test_is_protection_page_detects_ddos_guard_interstitial(self) -> None:
+        """The 843-byte DTEK interstitial should be recognized as WAF HTML."""
+        html = (
+            '<html style="height:100%"><head>'
+            '<META NAME="ROBOTS" CONTENT="NOINDEX, NOFOLLOW">'
+            '<meta name="format-detection" content="telephone=no">'
+            '<script src="https://check.ddos-guard.net/check.js"></script>'
+            "</head></html>"
+        )
+        self.assertTrue(dtek_client._is_protection_page(html))
+        self.assertIn(
+            "bot-protection page",
+            dtek_client._csrf_missing_message(html),
+        )
+        self.assertIn(
+            "https://check.ddos-guard.net/check.js",
+            dtek_client._protection_check_urls(html),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

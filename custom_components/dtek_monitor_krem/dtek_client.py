@@ -14,6 +14,7 @@ import aiohttp
 
 from .const import (
     DTEK_AJAX_URL,
+    DTEK_BASE_URL,
     DTEK_SHUTDOWNS_URL,
     REQUEST_TIMEOUT,
 )
@@ -103,43 +104,36 @@ class DTEKClient:
 
         await self._refresh_session()
 
-    def _clear_session_state(self) -> None:
-        """Drop CSRF and cookies so the next page load starts clean."""
+    def _reset_csrf_state(self) -> None:
+        """Drop only the DTEK CSRF token, keeping WAF cookies."""
         self._csrf_token = None
-        self._cookies = {}
         self._session_created = None
+
+    def _remember_cookies(self, cookies: dict[str, str] | None = None) -> None:
+        """Merge response and jar cookies into the client cookie map."""
+        if cookies:
+            self._cookies.update(cookies)
         try:
-            self._session.cookie_jar.clear()
+            for cookie in self._session.cookie_jar:
+                name = getattr(cookie, "key", None) or getattr(cookie, "name", None)
+                value = getattr(cookie, "value", None)
+                if name and value:
+                    self._cookies[str(name)] = str(value)
         except Exception:
             pass
 
     async def _refresh_session(self) -> None:
         """Force-refresh CSRF token and session cookies."""
         _LOGGER.debug("Refreshing DTEK session and CSRF token")
-        self._clear_session_state()
+        self._reset_csrf_state()
 
         try:
-            html, cookies = await self._load_shutdowns_page()
+            html = await self._load_real_shutdowns_page()
             token = _extract_csrf_token(html)
             if token is None:
-                # Stale cookies in the shared jar can yield a challenge page.
-                # Retry once after another hard reset.
-                _LOGGER.debug(
-                    "CSRF missing on first shutdowns fetch (%s), retrying clean",
-                    _html_debug_summary(html),
-                )
-                self._clear_session_state()
-                html, cookies = await self._load_shutdowns_page()
-                token = _extract_csrf_token(html)
-
-            if token is None:
-                raise DTEKAuthError(
-                    "CSRF token not found in page HTML "
-                    f"({_html_debug_summary(html)})"
-                )
+                raise DTEKAuthError(_csrf_missing_message(html))
 
             self._csrf_token = token
-            self._cookies = cookies
             self._session_created = datetime.now(KYIV_TZ)
 
             schedule = _parse_schedule_from_html(html)
@@ -150,17 +144,54 @@ class DTEKClient:
             _LOGGER.debug("DTEK session refreshed")
 
         except DTEKApiError:
-            self._clear_session_state()
+            self._reset_csrf_state()
             raise
         except (aiohttp.ClientError, TimeoutError, OSError, UnicodeError) as err:
-            self._clear_session_state()
+            self._reset_csrf_state()
             raise DTEKApiError(f"Network error loading DTEK page: {err}") from err
+
+    async def _load_real_shutdowns_page(self) -> str:
+        """Load the shutdowns page, completing a WAF check if one is returned."""
+        html, cookies = await self._load_shutdowns_page()
+        self._remember_cookies(cookies)
+        if _extract_csrf_token(html):
+            return html
+
+        if _is_protection_page(html):
+            _LOGGER.debug(
+                "DTEK returned a protection page, retrying after browser check (%s)",
+                _html_debug_summary(html),
+            )
+            await self._complete_protection_check(html)
+            html, cookies = await self._load_shutdowns_page()
+            self._remember_cookies(cookies)
+
+        return html
+
+    async def _complete_protection_check(self, html: str) -> None:
+        """Request the official DDoS-Guard check assets a browser would load."""
+        for url in _protection_check_urls(html):
+            try:
+                async with self._session.get(
+                    url,
+                    headers={**PAGE_HEADERS, "Referer": DTEK_SHUTDOWNS_URL},
+                    timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
+                    allow_redirects=True,
+                ) as resp:
+                    self._remember_cookies(_extract_cookies(resp))
+            except (aiohttp.ClientError, TimeoutError, OSError, UnicodeError) as err:
+                _LOGGER.debug("Protection check request failed for %s: %s", url, err)
 
     async def _load_shutdowns_page(self) -> tuple[str, dict[str, str]]:
         """Download the shutdowns page and return HTML plus Set-Cookie values."""
+        headers = dict(PAGE_HEADERS)
+        cookie_header = _format_cookie_header(self._cookies)
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+
         async with self._session.get(
             DTEK_SHUTDOWNS_URL,
-            headers=PAGE_HEADERS,
+            headers=headers,
             timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
             allow_redirects=True,
         ) as resp:
@@ -543,6 +574,49 @@ def _normalize_groups(value: Any) -> list[str]:
         if normalized:
             groups.append(normalized)
     return groups
+
+
+PROTECTION_SCRIPT_RE = re.compile(
+    r"""<script[^>]+src=["']([^"']+)["']""",
+    re.IGNORECASE,
+)
+DDOS_GUARD_CHECK_URL = "https://check.ddos-guard.net/check.js"
+DDOS_GUARD_ID_URL = f"{DTEK_BASE_URL}/.well-known/ddos-guard/id/"
+
+
+def _is_protection_page(html: str) -> bool:
+    """Return True when HTML looks like a DDoS-Guard/WAF interstitial."""
+    lowered = html.lower()
+    compact = lowered.replace(" ", "")
+    if "ddos-guard" in lowered or "check.ddos-guard.net" in lowered:
+        return True
+    if "noindex" in lowered and "nofollow" in lowered and "height:100%" in compact:
+        return True
+    return False
+
+
+def _protection_check_urls(html: str) -> list[str]:
+    """Collect official DDoS-Guard check URLs from the challenge page."""
+    urls = [DDOS_GUARD_CHECK_URL, DDOS_GUARD_ID_URL]
+    for match in PROTECTION_SCRIPT_RE.finditer(html):
+        src = match.group(1)
+        if src.startswith("//"):
+            src = f"https:{src}"
+        elif src.startswith("/"):
+            src = f"{DTEK_BASE_URL}{src}"
+        if "ddos-guard" in src and src not in urls:
+            urls.append(src)
+    return urls
+
+
+def _csrf_missing_message(html: str) -> str:
+    """Build an error that distinguishes a WAF page from a missing token."""
+    if _is_protection_page(html):
+        return (
+            "DTEK returned a bot-protection page instead of the shutdowns form "
+            f"({_html_debug_summary(html)})"
+        )
+    return f"CSRF token not found in page HTML ({_html_debug_summary(html)})"
 
 
 def _extract_csrf_token(html: str) -> str | None:
