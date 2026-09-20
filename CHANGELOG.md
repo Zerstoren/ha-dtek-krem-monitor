@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.4] - 2026-09-21
+
+### Fixed
+
+- Session refresh now clears stale cookies and accepts more CSRF HTML variants, so later polls no longer fail with `CSRF token not found in page HTML`.
+
 ## [1.2.3] - 2026-09-20
 
 ### Fixed

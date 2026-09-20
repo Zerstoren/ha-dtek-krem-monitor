@@ -67,6 +67,24 @@ class ParseHouseDataTests(unittest.TestCase):
             "msecond",
         )
 
+    def test_extract_csrf_token_supports_common_html_variants(self) -> None:
+        """CSRF parser should accept meta order, quotes, hidden input, and JS."""
+        cases = (
+            ('<meta name="csrf-token" content="token-meta">', "token-meta"),
+            ("<meta content='token-reversed' name='csrf-token'>", "token-reversed"),
+            ('<input type="hidden" name="_token" value="token-input">', "token-input"),
+            ('window.Laravel = { csrfToken: "token-js" };', "token-js"),
+        )
+        for html, token in cases:
+            with self.subTest(token=token):
+                self.assertEqual(dtek_client._extract_csrf_token(html), token)
+
+    def test_extract_csrf_token_returns_none_for_challenge_page(self) -> None:
+        """Bot-challenge HTML without a token should not pretend to be valid."""
+        self.assertIsNone(
+            dtek_client._extract_csrf_token("<html><title>Just a moment...</title></html>")
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

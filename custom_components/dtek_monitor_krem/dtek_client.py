@@ -20,12 +20,33 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-CSRF_META_RE = re.compile(r'<meta\s+name="csrf-token"\s+content="([^"]+)"')
+CSRF_META_TAG_RE = re.compile(
+    r"<meta\b[^>]*(?:csrf-token|csrf_token)[^>]*>",
+    re.IGNORECASE,
+)
+CSRF_CONTENT_RE = re.compile(
+    r"""content\s*=\s*['"]([^'"]+)['"]""",
+    re.IGNORECASE,
+)
+CSRF_INPUT_RE = re.compile(
+    r"""<input\b(?=[^>]*\bname\s*=\s*['"]_token['"])[^>]*\bvalue\s*=\s*['"]([^'"]+)['"]""",
+    re.IGNORECASE,
+)
+CSRF_JS_RE = re.compile(
+    r"""(?:csrfToken|csrf_token|_token)\s*[:=]\s*['"]([^'"]+)['"]""",
+    re.IGNORECASE,
+)
 
 BROWSER_UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
 )
+
+PAGE_HEADERS = {
+    "User-Agent": BROWSER_UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "uk-UA,uk;q=0.9,en;q=0.8",
+}
 
 COMMON_HEADERS = {
     "X-Requested-With": "XMLHttpRequest",
@@ -82,44 +103,73 @@ class DTEKClient:
 
         await self._refresh_session()
 
+    def _clear_session_state(self) -> None:
+        """Drop CSRF and cookies so the next page load starts clean."""
+        self._csrf_token = None
+        self._cookies = {}
+        self._session_created = None
+        try:
+            self._session.cookie_jar.clear()
+        except Exception:
+            pass
+
     async def _refresh_session(self) -> None:
         """Force-refresh CSRF token and session cookies."""
         _LOGGER.debug("Refreshing DTEK session and CSRF token")
+        self._clear_session_state()
 
         try:
-            async with self._session.get(
-                DTEK_SHUTDOWNS_URL,
-                headers={"User-Agent": BROWSER_UA},
-                timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
-                allow_redirects=True,
-            ) as resp:
-                if resp.status != 200:
-                    raise DTEKApiError(
-                        f"Failed to load shutdowns page: HTTP {resp.status}"
-                    )
+            html, cookies = await self._load_shutdowns_page()
+            token = _extract_csrf_token(html)
+            if token is None:
+                # Stale cookies in the shared jar can yield a challenge page.
+                # Retry once after another hard reset.
+                _LOGGER.debug(
+                    "CSRF missing on first shutdowns fetch (%s), retrying clean",
+                    _html_debug_summary(html),
+                )
+                self._clear_session_state()
+                html, cookies = await self._load_shutdowns_page()
+                token = _extract_csrf_token(html)
 
-                html = await resp.text()
+            if token is None:
+                raise DTEKAuthError(
+                    "CSRF token not found in page HTML "
+                    f"({_html_debug_summary(html)})"
+                )
 
-                match = CSRF_META_RE.search(html)
-                if not match:
-                    raise DTEKAuthError("CSRF token not found in page HTML")
+            self._csrf_token = token
+            self._cookies = cookies
+            self._session_created = datetime.now(KYIV_TZ)
 
-                self._csrf_token = match.group(1)
-                self._cookies = _extract_cookies(resp)
-                self._session_created = datetime.now(KYIV_TZ)
+            schedule = _parse_schedule_from_html(html)
+            if schedule:
+                self._schedule_data = schedule
+                self._schedule_dirty = True
 
-                # Parse schedule data embedded in HTML <script> tags
-                schedule = _parse_schedule_from_html(html)
-                if schedule:
-                    self._schedule_data = schedule
-                    self._schedule_dirty = True
+            _LOGGER.debug("DTEK session refreshed")
 
-                _LOGGER.debug("DTEK session refreshed")
-
+        except DTEKApiError:
+            self._clear_session_state()
+            raise
         except (aiohttp.ClientError, TimeoutError, OSError, UnicodeError) as err:
-            self._csrf_token = None
-            self._session_created = None
+            self._clear_session_state()
             raise DTEKApiError(f"Network error loading DTEK page: {err}") from err
+
+    async def _load_shutdowns_page(self) -> tuple[str, dict[str, str]]:
+        """Download the shutdowns page and return HTML plus Set-Cookie values."""
+        async with self._session.get(
+            DTEK_SHUTDOWNS_URL,
+            headers=PAGE_HEADERS,
+            timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
+            allow_redirects=True,
+        ) as resp:
+            if resp.status != 200:
+                raise DTEKApiError(
+                    f"Failed to load shutdowns page: HTTP {resp.status}"
+                )
+            html = await resp.text()
+            return html, _extract_cookies(resp)
 
     async def _post(
         self,
@@ -156,15 +206,17 @@ class DTEKClient:
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
             ) as resp:
+                self._cookies.update(_extract_cookies(resp))
+
                 if resp.status == 400:
                     if retry:
                         _LOGGER.debug("Got 400, refreshing CSRF and retrying")
-                        self._csrf_token = None
-                        self._cookies = {}
-                        self._session_created = None
                         await self._refresh_session()
-                        return await self._post(data, retry=False,
-                                                require_result=require_result)
+                        return await self._post(
+                            data,
+                            retry=False,
+                            require_result=require_result,
+                        )
                     raise DTEKAuthError("CSRF validation failed after refresh")
 
                 if resp.status != 200:
@@ -491,6 +543,34 @@ def _normalize_groups(value: Any) -> list[str]:
         if normalized:
             groups.append(normalized)
     return groups
+
+
+def _extract_csrf_token(html: str) -> str | None:
+    """Extract a CSRF token from DTEK HTML variants."""
+    if not html:
+        return None
+
+    meta = CSRF_META_TAG_RE.search(html)
+    if meta:
+        content = CSRF_CONTENT_RE.search(meta.group(0))
+        if content and content.group(1).strip():
+            return content.group(1).strip()
+
+    for pattern in (CSRF_INPUT_RE, CSRF_JS_RE):
+        match = pattern.search(html)
+        if match and match.group(1).strip():
+            return match.group(1).strip()
+
+    return None
+
+
+def _html_debug_summary(html: str) -> str:
+    """Build a short HTML summary for logs when CSRF parsing fails."""
+    compact = " ".join(html.split())
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+    title = " ".join(title_match.group(1).split()) if title_match else ""
+    snippet = compact[:180]
+    return f"len={len(html)} title={title!r} snippet={snippet!r}"
 
 
 def _extract_cookies(response: aiohttp.ClientResponse) -> dict[str, str]:
