@@ -1,6 +1,6 @@
 """Constants for the DTEK Monitor integration."""
 
-DOMAIN = "dtek_monitor"
+DOMAIN = "dtek_monitor_krem"
 
 DTEK_BASE_URL = "https://www.dtek-krem.com.ua"
 DTEK_SHUTDOWNS_URL = f"{DTEK_BASE_URL}/ua/shutdowns"

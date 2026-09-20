@@ -18,6 +18,7 @@ from .const import (
     CONF_SCAN_INTERVAL,
     CONF_STREET,
     DEFAULT_SCAN_INTERVAL_SECONDS,
+    DOMAIN,
 )
 from .dtek_client import DTEKApiError, DTEKClient
 from .schedule import (
@@ -60,7 +61,7 @@ class DTEKDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         super().__init__(
             hass,
             _LOGGER,
-            name=f"dtek_monitor_{self.city}_{self.street}_{self.house}",
+            name=f"{DOMAIN}_{self.city}_{self.street}_{self.house}",
             update_interval=timedelta(seconds=scan_interval),
             config_entry=entry,
         )

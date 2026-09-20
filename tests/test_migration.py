@@ -38,8 +38,8 @@ class MigrationHelperTests(unittest.TestCase):
     def test_migrate_device_identifiers_swaps_only_integration_identifier(self) -> None:
         """Device identifier migration should preserve unrelated identifiers."""
         migrated = migration.migrate_device_identifiers(
-            {("dtek_monitor", "01ABC"), ("other", "value")},
-            "dtek_monitor",
+            {("dtek_monitor_krem", "01ABC"), ("other", "value")},
+            "dtek_monitor_krem",
             "01ABC",
             "м. Одеса_дорога Люстдорфська_56В",
         )
@@ -47,7 +47,7 @@ class MigrationHelperTests(unittest.TestCase):
         self.assertEqual(
             migrated,
             {
-                ("dtek_monitor", "м. Одеса_дорога Люстдорфська_56В"),
+                ("dtek_monitor_krem", "м. Одеса_дорога Люстдорфська_56В"),
                 ("other", "value"),
             },
         )

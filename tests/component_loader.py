@@ -8,16 +8,16 @@ import types
 from pathlib import Path
 
 COMPONENT_ROOT = (
-    Path(__file__).resolve().parents[1] / "custom_components" / "dtek_monitor"
+    Path(__file__).resolve().parents[1] / "custom_components" / "dtek_monitor_krem"
 )
 
 
 def load_component_module(module_name: str):
     """Load a component module while bypassing the package __init__ import."""
     _ensure_namespace_package("custom_components", COMPONENT_ROOT.parent)
-    _ensure_namespace_package("custom_components.dtek_monitor", COMPONENT_ROOT)
+    _ensure_namespace_package("custom_components.dtek_monitor_krem", COMPONENT_ROOT)
 
-    full_name = f"custom_components.dtek_monitor.{module_name}"
+    full_name = f"custom_components.dtek_monitor_krem.{module_name}"
     if full_name in sys.modules:
         return sys.modules[full_name]
 

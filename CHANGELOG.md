@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.2] - 2026-09-20
+
+### Fixed
+
+- Aligned the integration domain, directory name, and config-flow handler so Home Assistant can load the integration after the KREM fork rename.
+
 ## [1.2.0] - 2026-03-09
 
 ### Added
