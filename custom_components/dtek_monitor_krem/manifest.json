@@ -7,6 +7,6 @@
   "documentation": "https://github.com/Zerstoren/ha-dtek-krem-monitor",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/Zerstoren/ha-dtek-krem-monitor/issues",
-  "requirements": [],
-  "version": "1.2.5"
+  "requirements": ["curl_cffi>=0.7.0"],
+  "version": "1.2.6"
 }

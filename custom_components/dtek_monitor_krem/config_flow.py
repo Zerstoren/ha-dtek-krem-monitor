@@ -11,7 +11,6 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.core import callback
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
@@ -93,8 +92,7 @@ class DTEKMonitorConfigFlow(ConfigFlow, domain=DOMAIN):
     def _get_client(self) -> DTEKClient:
         """Get or create the DTEK API client."""
         if self._client is None:
-            session = async_get_clientsession(self.hass)
-            self._client = DTEKClient(session)
+            self._client = DTEKClient()
         return self._client
 
     async def _fetch_streets(self) -> dict[str, list[str]]:

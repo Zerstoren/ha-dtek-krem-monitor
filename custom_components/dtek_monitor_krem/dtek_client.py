@@ -6,11 +6,10 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from http.cookies import CookieError, SimpleCookie
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-import aiohttp
+from curl_cffi.requests import AsyncSession
 
 from .const import (
     DTEK_AJAX_URL,
@@ -67,30 +66,30 @@ SESSION_MAX_AGE = timedelta(hours=1)
 
 
 class DTEKClient:
-    """Async HTTP client for DTEK OEM shutdowns API.
+    """Async HTTP client for the DTEK KREM shutdowns API.
 
-    Handles CSRF token acquisition, session cookies, and all API methods.
-    Can run on either a dedicated or HA-managed aiohttp session.
+    Uses curl_cffi with Chrome TLS impersonation because aiohttp is served
+    the DDoS-Guard interstitial instead of the real shutdowns page.
     """
 
-    def __init__(
-        self,
-        session: aiohttp.ClientSession,
-        *,
-        close_session: bool = False,
-    ) -> None:
-        self._session = session
-        self._close_session = close_session
+    def __init__(self) -> None:
+        self._http: AsyncSession | None = None
         self._csrf_token: str | None = None
-        self._cookies: dict[str, str] = {}
         self._schedule_data: dict[str, Any] | None = None
         self._session_created: datetime | None = None
         self._schedule_dirty: bool = False
 
     async def close(self) -> None:
         """Close the underlying HTTP session."""
-        if self._close_session and not self._session.closed:
-            await self._session.close()
+        if self._http is not None:
+            await self._http.close()
+            self._http = None
+
+    async def _ensure_http(self) -> AsyncSession:
+        """Create the Chrome-impersonating session on first use."""
+        if self._http is None:
+            self._http = AsyncSession(impersonate="chrome120")
+        return self._http
 
     async def _ensure_session(self) -> None:
         """Fetch the shutdowns page to obtain CSRF token and session cookie."""
@@ -104,31 +103,14 @@ class DTEKClient:
 
         await self._refresh_session()
 
-    def _reset_csrf_state(self) -> None:
-        """Drop only the DTEK CSRF token, keeping WAF cookies."""
-        self._csrf_token = None
-        self._session_created = None
-
-    def _remember_cookies(self, cookies: dict[str, str] | None = None) -> None:
-        """Merge response and jar cookies into the client cookie map."""
-        if cookies:
-            self._cookies.update(cookies)
-        try:
-            for cookie in self._session.cookie_jar:
-                name = getattr(cookie, "key", None) or getattr(cookie, "name", None)
-                value = getattr(cookie, "value", None)
-                if name and value:
-                    self._cookies[str(name)] = str(value)
-        except Exception:
-            pass
-
     async def _refresh_session(self) -> None:
         """Force-refresh CSRF token and session cookies."""
         _LOGGER.debug("Refreshing DTEK session and CSRF token")
-        self._reset_csrf_state()
+        self._csrf_token = None
+        self._session_created = None
 
         try:
-            html = await self._load_real_shutdowns_page()
+            html = await self._load_shutdowns_page()
             token = _extract_csrf_token(html)
             if token is None:
                 raise DTEKAuthError(_csrf_missing_message(html))
@@ -144,63 +126,28 @@ class DTEKClient:
             _LOGGER.debug("DTEK session refreshed")
 
         except DTEKApiError:
-            self._reset_csrf_state()
+            self._csrf_token = None
+            self._session_created = None
             raise
-        except (aiohttp.ClientError, TimeoutError, OSError, UnicodeError) as err:
-            self._reset_csrf_state()
+        except (TimeoutError, OSError, UnicodeError) as err:
+            self._csrf_token = None
+            self._session_created = None
             raise DTEKApiError(f"Network error loading DTEK page: {err}") from err
 
-    async def _load_real_shutdowns_page(self) -> str:
-        """Load the shutdowns page, completing a WAF check if one is returned."""
-        html, cookies = await self._load_shutdowns_page()
-        self._remember_cookies(cookies)
-        if _extract_csrf_token(html):
-            return html
-
-        if _is_protection_page(html):
-            _LOGGER.debug(
-                "DTEK returned a protection page, retrying after browser check (%s)",
-                _html_debug_summary(html),
-            )
-            await self._complete_protection_check(html)
-            html, cookies = await self._load_shutdowns_page()
-            self._remember_cookies(cookies)
-
-        return html
-
-    async def _complete_protection_check(self, html: str) -> None:
-        """Request the official DDoS-Guard check assets a browser would load."""
-        for url in _protection_check_urls(html):
-            try:
-                async with self._session.get(
-                    url,
-                    headers={**PAGE_HEADERS, "Referer": DTEK_SHUTDOWNS_URL},
-                    timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
-                    allow_redirects=True,
-                ) as resp:
-                    self._remember_cookies(_extract_cookies(resp))
-            except (aiohttp.ClientError, TimeoutError, OSError, UnicodeError) as err:
-                _LOGGER.debug("Protection check request failed for %s: %s", url, err)
-
-    async def _load_shutdowns_page(self) -> tuple[str, dict[str, str]]:
-        """Download the shutdowns page and return HTML plus Set-Cookie values."""
-        headers = dict(PAGE_HEADERS)
-        cookie_header = _format_cookie_header(self._cookies)
-        if cookie_header:
-            headers["Cookie"] = cookie_header
-
-        async with self._session.get(
+    async def _load_shutdowns_page(self) -> str:
+        """Download the shutdowns page HTML."""
+        session = await self._ensure_http()
+        resp = await session.get(
             DTEK_SHUTDOWNS_URL,
-            headers=headers,
-            timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
+            headers=PAGE_HEADERS,
+            timeout=REQUEST_TIMEOUT,
             allow_redirects=True,
-        ) as resp:
-            if resp.status != 200:
-                raise DTEKApiError(
-                    f"Failed to load shutdowns page: HTTP {resp.status}"
-                )
-            html = await resp.text()
-            return html, _extract_cookies(resp)
+        )
+        if resp.status_code != 200:
+            raise DTEKApiError(
+                f"Failed to load shutdowns page: HTTP {resp.status_code}"
+            )
+        return resp.text
 
     async def _post(
         self,
@@ -211,63 +158,56 @@ class DTEKClient:
         """Send POST request to the DTEK AJAX endpoint.
 
         Automatically refreshes CSRF on auth errors and retries once.
-
-        Args:
-            data: POST form data.
-            retry: Whether to retry on CSRF failure.
-            require_result: If True, raise on result=false. Set False for
-                            methods where result=false is a valid response.
         """
         await self._ensure_session()
+        session = await self._ensure_http()
 
         headers = {
             **COMMON_HEADERS,
-            "User-Agent": BROWSER_UA,
-            "X-Csrf-Token": self._csrf_token,
+            "Origin": DTEK_BASE_URL,
+            "X-Csrf-Token": self._csrf_token or "",
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         }
-        cookie_header = _format_cookie_header(self._cookies)
-        if cookie_header:
-            headers["Cookie"] = cookie_header
 
         try:
-            async with self._session.post(
+            resp = await session.post(
                 DTEK_AJAX_URL,
                 data=data,
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
-            ) as resp:
-                self._cookies.update(_extract_cookies(resp))
+                timeout=REQUEST_TIMEOUT,
+            )
+            if resp.status_code == 400:
+                if retry:
+                    _LOGGER.debug("Got 400, refreshing CSRF and retrying")
+                    await self._refresh_session()
+                    return await self._post(
+                        data,
+                        retry=False,
+                        require_result=require_result,
+                    )
+                raise DTEKAuthError("CSRF validation failed after refresh")
 
-                if resp.status == 400:
-                    if retry:
-                        _LOGGER.debug("Got 400, refreshing CSRF and retrying")
-                        await self._refresh_session()
-                        return await self._post(
-                            data,
-                            retry=False,
-                            require_result=require_result,
-                        )
-                    raise DTEKAuthError("CSRF validation failed after refresh")
+            if resp.status_code != 200:
+                raise DTEKApiError(f"DTEK API returned HTTP {resp.status_code}")
 
-                if resp.status != 200:
-                    raise DTEKApiError(f"DTEK API returned HTTP {resp.status}")
+            try:
+                result = resp.json()
+            except (json.JSONDecodeError, ValueError) as err:
+                raise DTEKApiError(
+                    f"Invalid JSON from DTEK API: {err} "
+                    f"({_html_debug_summary(resp.text)})"
+                ) from err
 
-                try:
-                    result = await resp.json(content_type=None)
-                except (json.JSONDecodeError, aiohttp.ContentTypeError, ValueError) as err:
-                    raise DTEKApiError(f"Invalid JSON from DTEK API: {err}") from err
+            if require_result and (
+                not isinstance(result, dict) or not result.get("result")
+            ):
+                raise DTEKApiError(f"DTEK API returned error: {result}")
 
-                if require_result and (
-                    not isinstance(result, dict) or not result.get("result")
-                ):
-                    raise DTEKApiError(f"DTEK API returned error: {result}")
-
-                return result
+            return result
 
         except DTEKApiError:
             raise
-        except (aiohttp.ClientError, TimeoutError, OSError) as err:
+        except (TimeoutError, OSError) as err:
             raise DTEKApiError(f"Network error calling DTEK API: {err}") from err
 
     async def get_streets(self) -> dict[str, list[str]]:
@@ -645,26 +585,6 @@ def _html_debug_summary(html: str) -> str:
     title = " ".join(title_match.group(1).split()) if title_match else ""
     snippet = compact[:180]
     return f"len={len(html)} title={title!r} snippet={snippet!r}"
-
-
-def _extract_cookies(response: aiohttp.ClientResponse) -> dict[str, str]:
-    """Extract response cookies into a plain dict."""
-    cookies: dict[str, str] = {}
-    for raw_cookie in response.headers.getall("Set-Cookie", []):
-        parsed = SimpleCookie()
-        try:
-            parsed.load(raw_cookie)
-        except (CookieError, IndexError, ValueError) as err:
-            _LOGGER.debug("Skipping unparsable DTEK cookie %s: %s", raw_cookie, err)
-            continue
-        for name, morsel in parsed.items():
-            cookies[name] = morsel.value
-    return cookies
-
-
-def _format_cookie_header(cookies: dict[str, str]) -> str:
-    """Convert a cookie mapping into a Cookie header value."""
-    return "; ".join(f"{name}={value}" for name, value in cookies.items())
 
 
 def _extract_js_object(html: str, assignment_name: str) -> str | None:

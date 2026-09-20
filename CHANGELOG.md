@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.6] - 2026-09-21
+
+### Changed
+
+- DTEK HTTP requests now use `curl_cffi` with Chrome TLS impersonation, because aiohttp receives the ~800-byte DDoS-Guard stub instead of the shutdowns page.
+
 ## [1.2.5] - 2026-09-21
 
 ### Fixed

@@ -4,12 +4,9 @@ from __future__ import annotations
 
 import logging
 
-import aiohttp
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
@@ -31,11 +28,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up DTEK Monitor from a config entry."""
     await _async_migrate_registry_identifiers(hass, entry)
 
-    session = async_create_clientsession(
-        hass,
-        cookie_jar=aiohttp.CookieJar(),
-    )
-    client = DTEKClient(session, close_session=True)
+    client = DTEKClient()
 
     coordinator = DTEKDataCoordinator(hass, client, entry)
     try:
