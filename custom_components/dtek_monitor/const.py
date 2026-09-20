@@ -2,7 +2,7 @@
 
 DOMAIN = "dtek_monitor"
 
-DTEK_BASE_URL = "https://www.dtek-oem.com.ua"
+DTEK_BASE_URL = "https://www.dtek-krem.com.ua"
 DTEK_SHUTDOWNS_URL = f"{DTEK_BASE_URL}/ua/shutdowns"
 DTEK_AJAX_URL = f"{DTEK_BASE_URL}/ua/ajax"
 

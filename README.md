@@ -1,11 +1,13 @@
-# DTEK Monitor
+# DTEK KREM Monitor
+
+Fork of DTEK OEM Monitor
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Custom Home Assistant integration for monitoring electricity outages in the DTEK OEM service area (Odesa region, Ukraine).
+Custom Home Assistant integration for monitoring electricity outages in the DTEK KREM service area (Kiev region energy, Ukraine).
 
-The integration polls the [DTEK OEM shutdowns page](https://www.dtek-oem.com.ua/ua/shutdowns) for the selected address, combines real outage status with planned and possible schedule windows, and exposes the result as Home Assistant sensors and calendars.
+The integration polls the [DTEK KREM shutdowns page](https://www.dtek-krem.com.ua/ua/shutdowns) for the selected address, combines real outage status with planned and possible schedule windows, and exposes the result as Home Assistant sensors and calendars.
 
 ## Disclaimer
 
@@ -148,9 +150,11 @@ python -m compileall custom_components tests
 
 # DTEK Monitor (Українська)
 
-Кастомна інтеграція Home Assistant для моніторингу відключень електроенергії в зоні обслуговування ДТЕК ОЕМ (Одеська область, Україна).
+Форк репозиторію Одеський регіональних мереж
 
-Інтеграція опитує [сторінку відключень ДТЕК ОЕМ](https://www.dtek-oem.com.ua/ua/shutdowns) для вибраної адреси, поєднує поточний стан відключення з плановими та можливими слотами графіка і публікує результат у Home Assistant через сенсори та календарі.
+Кастомна інтеграція Home Assistant для моніторингу відключень електроенергії в зоні обслуговування ДТЕК КРЕМ (Київська область, Україна).
+
+Інтеграція опитує [сторінку відключень ДТЕК КРЕМ](https://www.dtek-krem.com.ua/ua/shutdowns) для вибраної адреси, поєднує поточний стан відключення з плановими та можливими слотами графіка і публікує результат у Home Assistant через сенсори та календарі.
 
 ## Дисклеймер
 
