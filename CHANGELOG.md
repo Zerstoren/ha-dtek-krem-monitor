@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.7] - 2026-09-21
+
+### Fixed
+
+- Incapsula first-response stub is retried on the same Chrome session; the second GET is the real shutdowns page with a CSRF token.
+
 ## [1.2.6] - 2026-09-21
 
 ### Changed

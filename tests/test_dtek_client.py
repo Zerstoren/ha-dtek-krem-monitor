@@ -85,6 +85,23 @@ class ParseHouseDataTests(unittest.TestCase):
             dtek_client._extract_csrf_token("<html><title>Just a moment...</title></html>")
         )
 
+    def test_is_protection_page_detects_incapsula_iframe(self) -> None:
+        """The live Incapsula stub should be recognized as WAF HTML."""
+        html = (
+            '<html style="height:100%"><head>'
+            '<META NAME="ROBOTS" CONTENT="NOINDEX, NOFOLLOW">'
+            '<meta name="format-detection" content="telephone=no">'
+            "</head><body>"
+            '<iframe id="main-iframe" src="/_Incapsula_Resource?SWUDNSAI=31">'
+            "Request unsuccessful. Incapsula incident ID: 123"
+            "</iframe></body></html>"
+        )
+        self.assertTrue(dtek_client._is_protection_page(html))
+        self.assertIn(
+            "bot-protection page",
+            dtek_client._csrf_missing_message(html),
+        )
+
     def test_is_protection_page_detects_ddos_guard_interstitial(self) -> None:
         """The 843-byte DTEK interstitial should be recognized as WAF HTML."""
         html = (

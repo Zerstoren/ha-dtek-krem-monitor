@@ -63,13 +63,14 @@ class DTEKAuthError(DTEKApiError):
 
 
 SESSION_MAX_AGE = timedelta(hours=1)
+_PAGE_RETRY_ATTEMPTS = 3
 
 
 class DTEKClient:
     """Async HTTP client for the DTEK KREM shutdowns API.
 
     Uses curl_cffi with Chrome TLS impersonation because aiohttp is served
-    the DDoS-Guard interstitial instead of the real shutdowns page.
+    the Incapsula interstitial instead of the real shutdowns page.
     """
 
     def __init__(self) -> None:
@@ -135,19 +136,34 @@ class DTEKClient:
             raise DTEKApiError(f"Network error loading DTEK page: {err}") from err
 
     async def _load_shutdowns_page(self) -> str:
-        """Download the shutdowns page HTML."""
+        """Download the shutdowns page HTML.
+
+        Incapsula first returns an ~800-byte iframe stub and sets cookies.
+        The next GET on the same session is the real Laravel page.
+        """
         session = await self._ensure_http()
-        resp = await session.get(
-            DTEK_SHUTDOWNS_URL,
-            headers=PAGE_HEADERS,
-            timeout=REQUEST_TIMEOUT,
-            allow_redirects=True,
-        )
-        if resp.status_code != 200:
-            raise DTEKApiError(
-                f"Failed to load shutdowns page: HTTP {resp.status_code}"
+        html = ""
+        for attempt in range(1, _PAGE_RETRY_ATTEMPTS + 1):
+            resp = await session.get(
+                DTEK_SHUTDOWNS_URL,
+                headers=PAGE_HEADERS,
+                timeout=REQUEST_TIMEOUT,
+                allow_redirects=True,
             )
-        return resp.text
+            if resp.status_code != 200:
+                raise DTEKApiError(
+                    f"Failed to load shutdowns page: HTTP {resp.status_code}"
+                )
+            html = resp.text
+            if not _is_protection_page(html):
+                return html
+            _LOGGER.debug(
+                "DTEK returned a WAF challenge (attempt %s/%s, %s)",
+                attempt,
+                _PAGE_RETRY_ATTEMPTS,
+                _html_debug_summary(html),
+            )
+        return html
 
     async def _post(
         self,
@@ -525,9 +541,11 @@ DDOS_GUARD_ID_URL = f"{DTEK_BASE_URL}/.well-known/ddos-guard/id/"
 
 
 def _is_protection_page(html: str) -> bool:
-    """Return True when HTML looks like a DDoS-Guard/WAF interstitial."""
+    """Return True when HTML looks like an Incapsula/DDoS-Guard interstitial."""
     lowered = html.lower()
     compact = lowered.replace(" ", "")
+    if "incapsula" in lowered or "_incapsula_resource" in lowered:
+        return True
     if "ddos-guard" in lowered or "check.ddos-guard.net" in lowered:
         return True
     if "noindex" in lowered and "nofollow" in lowered and "height:100%" in compact:
