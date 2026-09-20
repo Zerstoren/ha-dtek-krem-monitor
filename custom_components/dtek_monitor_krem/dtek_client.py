@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timedelta
-from http.cookies import SimpleCookie
+from datetime import datetime, timedelta, timezone
+from http.cookies import CookieError, SimpleCookie
 from typing import Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import aiohttp
 
@@ -116,7 +116,7 @@ class DTEKClient:
 
                 _LOGGER.debug("DTEK session refreshed")
 
-        except aiohttp.ClientError as err:
+        except (aiohttp.ClientError, TimeoutError, OSError, UnicodeError) as err:
             self._csrf_token = None
             self._session_created = None
             raise DTEKApiError(f"Network error loading DTEK page: {err}") from err
@@ -170,7 +170,10 @@ class DTEKClient:
                 if resp.status != 200:
                     raise DTEKApiError(f"DTEK API returned HTTP {resp.status}")
 
-                result = await resp.json(content_type=None)
+                try:
+                    result = await resp.json(content_type=None)
+                except (json.JSONDecodeError, aiohttp.ContentTypeError, ValueError) as err:
+                    raise DTEKApiError(f"Invalid JSON from DTEK API: {err}") from err
 
                 if require_result and (
                     not isinstance(result, dict) or not result.get("result")
@@ -179,7 +182,9 @@ class DTEKClient:
 
                 return result
 
-        except aiohttp.ClientError as err:
+        except DTEKApiError:
+            raise
+        except (aiohttp.ClientError, TimeoutError, OSError) as err:
             raise DTEKApiError(f"Network error calling DTEK API: {err}") from err
 
     async def get_streets(self) -> dict[str, list[str]]:
@@ -372,7 +377,13 @@ class DTEKClient:
         }
 
 
-KYIV_TZ = ZoneInfo("Europe/Kyiv")
+try:
+    KYIV_TZ = ZoneInfo("Europe/Kyiv")
+except ZoneInfoNotFoundError:
+    try:
+        KYIV_TZ = ZoneInfo("Europe/Kiev")
+    except ZoneInfoNotFoundError:
+        KYIV_TZ = timezone(timedelta(hours=2))
 
 _OUTAGE_SEVERITY = {"emergency": 3, "stabilization": 2, "planned": 1, "ok": 0}
 
@@ -487,7 +498,11 @@ def _extract_cookies(response: aiohttp.ClientResponse) -> dict[str, str]:
     cookies: dict[str, str] = {}
     for raw_cookie in response.headers.getall("Set-Cookie", []):
         parsed = SimpleCookie()
-        parsed.load(raw_cookie)
+        try:
+            parsed.load(raw_cookie)
+        except (CookieError, IndexError, ValueError) as err:
+            _LOGGER.debug("Skipping unparsable DTEK cookie %s: %s", raw_cookie, err)
+            continue
         for name, morsel in parsed.items():
             cookies[name] = morsel.value
     return cookies

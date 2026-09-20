@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.3] - 2026-09-20
+
+### Fixed
+
+- Config flow no longer returns HTTP 500 when DTEK session, JSON, or cookie parsing fails; the form now shows a connection error instead.
+
 ## [1.2.2] - 2026-09-20
 
 ### Fixed
